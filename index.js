@@ -7,10 +7,10 @@ const program = require('commander');
 const { keyBy } = require('lodash');
 
 
-program.option('-s, --space', 'spaceid', process.env.SPACE_ID || 'nanc497ebrzi')
-program.option('-e, --environment', 'environment', process.env.ENVIRONMENT_ID || 'master')
-program.option('-a, --accessToken', 'access token', process.env.CONTENTFUL_MANAGEMENT_TOKEN)
-program.option('-c, --changedir', 'Change to this content directory first', 'content')
+program.option('-s, --spaceId [space]', 'spaceid', process.env.SPACE_ID || 'nanc497ebrzi')
+program.option('-e, --environmentId [environment]', 'environment', process.env.ENVIRONMENT_ID || 'master')
+program.option('-a, --accessToken [token]', 'access token', process.env.CONTENTFUL_MANAGEMENT_TOKEN)
+program.option('-c, --changedir [path]', 'Change to this content directory first', 'content')
 
 program.parse(process.argv);
 
@@ -79,7 +79,6 @@ async function main () {
     content[type][entry.fields[field]['en-US']] = entry;
   }
 
-  // for (const type of ['posts', 'presentations', 'projects']) {
   for (const type of await fs.promises.readdir('.')) {
     const dirFiles = await fs.promises.readdir(type);
     for (const dir of dirFiles) {
@@ -94,10 +93,13 @@ async function main () {
       for (const field of Object.keys(parsed.data)) {
         fields[field] = { 'en-US': parsed.data[field] };
       }
+      delete fields.status;
+
       if (slugField) {
-        fields[slugField] = { 'en-US': dir };
+        fields[slugField] = { 'en-US': parsed.data.post_name || dir };
         delete fields.post_id;
         delete fields.postId;
+        delete fields.post_name;
       }
 
       for (const imageField of ['image', 'cover']) {
@@ -137,15 +139,25 @@ async function main () {
           });
         }
       }
-      if (content[entryType][parsed.data.title]) {
-        const entry = content[entryType][parsed.data.title];
+      let entry = content[entryType][parsed.data.title];
+      if (entry) {
         Object.keys(fields).forEach(field => {
           entry[field] = fields[field];
         });
-        await entry.update().then(entry => entry.publish());
+        entry = await entry.update()
       } else {
-        await environment.createEntry(entryType, { fields: fields }).then(entry => entry.publish());
+        entry = await environment.createEntry(entryType, { fields: fields })
       }
+      content[entryType][parsed.data.title] = entry;
+
+      if (parsed.data.status) {
+        if (parsed.data.status === 'publish') {
+          await entry.publish();
+        }
+      } else {
+        await entry.publish();
+      }
+
     }
   }
 }

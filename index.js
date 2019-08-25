@@ -2,7 +2,21 @@ const fs = require('fs');
 const path = require('path');
 const frontmatter = require('frontmatter');
 const mime = require('mime-types');
+const contentful = require('contentful-management');
+const program = require('commander');
+const { keyBy } = require('lodash');
 
+
+program.option('-s, --space', 'spaceid', process.env.SPACE_ID || 'nanc497ebrzi')
+program.option('-e, --environment', 'environment', process.env.ENVIRONMENT_ID || 'master')
+program.option('-a, --accessToken', 'access token', process.env.CONTENTFUL_MANAGEMENT_TOKEN)
+program.option('-c, --changedir', 'Change to this content directory first', 'content')
+
+program.parse(process.argv);
+
+if (program.changedir) {
+  process.chdir(program.changedir);
+}
 async function getOrCreateLink (environment, entries, link) {
   if (!entries.externalLink[link.url]) {
     const fields = {};
@@ -41,16 +55,9 @@ async function getOrCreateAsset (environment, entries, filename) {
 }
 
 async function main () {
-  const { keyBy } = require('lodash');
-  const contentful = require('contentful-management');
-  const spaceId = 'nanc497ebrzi';
-  const environmentId = 'master';
-  const client = contentful.createClient({
-    // This is the access token for this space. Normally you get the token in the Contentful web app
-    accessToken: process.env.CONTENTFUL_MANAGEMENT_TOKEN
-  });
+  const client = contentful.createClient({ accessToken: program.accessToken });
 
-  const environment = await client.getSpace(spaceId).then((space) => space.getEnvironment(environmentId));
+  const environment = await client.getSpace(program.spaceId).then((space) => space.getEnvironment(program.environmentId));
   const content = { Assets: {}, externalLink: {} };
 
   const contentTypes = await environment.getContentTypes().then((response) => keyBy(response.items, 'sys.id'));
@@ -73,11 +80,11 @@ async function main () {
   }
 
   // for (const type of ['posts', 'presentations', 'projects']) {
-  for (const type of ['projects', 'presentations']) {
-    const dirFiles = await fs.promises.readdir(path.join('content', type));
+  for (const type of await fs.promises.readdir('.')) {
+    const dirFiles = await fs.promises.readdir(type);
     for (const dir of dirFiles) {
       const entryType = type.replace(/s$/g, '');
-      const file = path.join('content', type, dir, 'index.md');
+      const file = path.join(type, dir, 'index.md');
       if (!fs.existsSync(file)) { continue; }
       const contentField = contentTypes[entryType].fields.find(f => f.type === 'Text').id;
       const slugField = contentTypes[entryType].fields.find(f => f.id === 'slug').id;
@@ -100,7 +107,7 @@ async function main () {
               sys: {
                 'type': 'Link',
                 'linkType': 'Asset',
-                id: await getOrCreateAsset(environment, content, path.join('content', type, dir, parsed.data[imageField]))
+                id: await getOrCreateAsset(environment, content, path.join(type, dir, parsed.data[imageField]))
               }
             }
           };
@@ -113,7 +120,7 @@ async function main () {
             sys: {
               'type': 'Link',
               'linkType': 'Asset',
-              id: await getOrCreateAsset(environment, content, path.join('content', type, dir, attachment))
+              id: await getOrCreateAsset(environment, content, path.join(type, dir, attachment))
             }
           });
         }

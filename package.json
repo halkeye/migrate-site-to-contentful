@@ -1,0 +1,18 @@
+{
+  "name": "migrate-site-to-contentful",
+  "version": "1.0.0",
+  "description": "Migrate my site to contentful",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Gavin Mogan <npm@gavinmogan.com> (https://www.gavinmogan.com/)",
+  "license": "MIT",
+  "devDependencies": {
+    "commander": "^3.0.0",
+    "contentful-management": "^5.10.0",
+    "frontmatter": "0.0.3",
+    "lodash": "^4.17.15",
+    "mime-types": "^2.1.24"
+  }
+}

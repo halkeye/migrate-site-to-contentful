@@ -11,24 +11,47 @@ program.option('-s, --spaceId [space]', 'spaceid', process.env.SPACE_ID || 'nanc
 program.option('-e, --environmentId [environment]', 'environment', process.env.ENVIRONMENT_ID || 'master')
 program.option('-a, --accessToken [token]', 'access token', process.env.CONTENTFUL_MANAGEMENT_TOKEN)
 program.option('-c, --changedir [path]', 'Change to this content directory first', 'content')
+program.option('-d, --deleteall', 'delete all')
 
 program.parse(process.argv);
 
 if (program.changedir) {
   process.chdir(program.changedir);
 }
-async function getOrCreateLink (environment, entries, link) {
-  if (!entries.externalLink[link.url]) {
+
+const getUniqueField = (contentType) => {
+  const field = contentType.fields.find(f => f.validations.find(v => v.unique));
+  if (!field) {
+    console.log('field', contentType);
+    throw Error('No unique field for ' + contentType.sys.id)
+  }
+  return field.id;
+}
+async function getOrCreateContent (contentType, contentTypes, environment, entries, data) {
+  const uniqueField = getUniqueField(contentTypes[contentType])
+  const key = data[uniqueField];
+
+  if (!entries[contentType][key]) {
     const fields = {};
 
-    for (const field of Object.keys(link)) {
-      fields[field] = { 'en-US': link[field] };
+    for (const field of Object.keys(data)) {
+      fields[field] = { 'en-US': data[field] };
     }
-    entries.externalLink[link.url] = await environment.createEntry('externalLink', {
-      fields: fields
-    }).then(entry => entry.publish());
+    try {
+      entries[contentType][key] = await environment.createEntry(contentType, { fields: fields }).then(entry => entry.publish());
+    } catch (err) {
+      console.log({
+        contentType,
+        uniqueField,
+        key,
+        data,
+        keys: Object.keys(entries[contentType]),
+        contentTypes: Object.keys(entries)
+      });
+      throw err;
+    }
   }
-  return entries.externalLink[link.url].sys.id;
+  return entries[contentType][key].sys.id;
 }
 
 async function getOrCreateAsset (environment, entries, filename) {
@@ -54,6 +77,27 @@ async function getOrCreateAsset (environment, entries, filename) {
   return entries.Assets[key].sys.id;
 }
 
+const getAllEntries = async (environment) => {
+  const entries = [];
+  let skip = 0;
+  while (true) {
+    const newEntries = await environment.getEntries({ skip: 0, limit: 1000, order: 'sys.createdAt' });
+    skip = newEntries.skip + newEntries.limit
+
+    Array.prototype.push.apply(entries, newEntries.items);
+
+    console.log({
+      'entries.length': entries.length,
+      'newEntries.total': newEntries.total,
+      bool: entries.length >= newEntries.total
+    })
+    if (entries.length >= newEntries.total) {
+      break;
+    }
+  }
+  return entries;
+}
+
 async function main () {
   const client = contentful.createClient({ accessToken: program.accessToken });
 
@@ -64,19 +108,27 @@ async function main () {
   Object.keys(contentTypes).forEach(contentType => { content[contentType] = {}; });
 
   // This API call will request a space with the specified ID
-  const entries = await environment.getEntries().then((entries) => entries.items);
+  const entries = await getAllEntries(environment)
+
+  if (program.deleteall) {
+    for (const entry of entries) {
+      await entry.unpublish().catch(() => {});
+      await entry.delete();
+    }
+    return;
+  }
 
   for (const entry of entries) {
     const type = entry.sys.contentType.sys.id;
-    const field = contentTypes[type].displayField;
+    const uniqueField = getUniqueField(contentTypes[type])
 
     if (!content[type]) {
       content[type] = {};
     }
-    if (!entry.fields[field]) {
+    if (!entry.fields[uniqueField]) {
       continue;
     }
-    content[type][entry.fields[field]['en-US']] = entry;
+    content[type][entry.fields[uniqueField]['en-US']] = entry;
   }
 
   for (const type of await fs.promises.readdir('.')) {
@@ -90,17 +142,21 @@ async function main () {
 
       const parsed = frontmatter(await fs.promises.readFile(file).then(buffer => buffer.toString('utf-8')));
       const fields = { [contentField]: { 'en-US': parsed.content } };
+      if (slugField) {
+        parsed.data.slug = parsed.data.post_name || dir;
+        delete parsed.data.post_id;
+        delete parsed.data.postId;
+        delete parsed.data.post_name;
+      }
+
       for (const field of Object.keys(parsed.data)) {
+        if (field === 'date') {
+          const hasTimezone = Boolean(parsed.data[field].toString().match(/(?:[-|+]\d{4}$|\d+Z$)/))
+          parsed.data[field] = new Date(parsed.data[field] + (hasTimezone ? '' : '+0700')).getTime()
+        }
         fields[field] = { 'en-US': parsed.data[field] };
       }
       delete fields.status;
-
-      if (slugField) {
-        fields[slugField] = { 'en-US': parsed.data.post_name || dir };
-        delete fields.post_id;
-        delete fields.postId;
-        delete fields.post_name;
-      }
 
       for (const imageField of ['image', 'cover']) {
         if (parsed.data[imageField]) {
@@ -127,6 +183,29 @@ async function main () {
           });
         }
       }
+      if (parsed.data.author) {
+        fields.author = {
+          'en-US': {
+            sys: {
+              'type': 'Link',
+              'linkType': 'Entry',
+              'id': await getOrCreateContent('author', contentTypes, environment, content, { name: parsed.data.author, slug: parsed.data.author })
+            }
+          }
+        };
+      }
+      if (parsed.data.category) {
+        fields.category = { 'en-US': [] };
+        for (const category of (Array.isArray(parsed.data.category) ? parsed.data.category : [parsed.data.category])) {
+          fields.category['en-US'].push({
+            sys: {
+              'type': 'Link',
+              'linkType': 'Entry',
+              'id': await getOrCreateContent('category', contentTypes, environment, content, { title: category, slug: category })
+            }
+          });
+        }
+      }
       if (parsed.data.links) {
         fields.links = { 'en-US': [] };
         for (const link of parsed.data.links) {
@@ -134,21 +213,26 @@ async function main () {
             sys: {
               'type': 'Link',
               'linkType': 'Entry',
-              'id': await getOrCreateLink(environment, content, link)
+              'id': await getOrCreateContent('externalLink', contentTypes, environment, content, link)
             }
           });
         }
       }
-      let entry = content[entryType][parsed.data.title];
-      if (entry) {
-        Object.keys(fields).forEach(field => {
-          entry[field] = fields[field];
-        });
-        entry = await entry.update()
-      } else {
-        entry = await environment.createEntry(entryType, { fields: fields })
+      const uniqueField = getUniqueField(contentTypes[entryType])
+      const entryKey = parsed.data[uniqueField];
+      let entry = content[entryType][entryKey];
+      try {
+        if (entry) {
+          Object.keys(fields).forEach(field => { entry[field] = fields[field]; });
+          entry = await entry.update()
+        } else {
+          entry = await environment.createEntry(entryType, { fields: fields })
+        }
+      } catch (err) {
+        console.log('fields', fields);
+        throw err;
       }
-      content[entryType][parsed.data.title] = entry;
+      content[entryType][entryKey] = entry;
 
       if (parsed.data.status) {
         if (parsed.data.status === 'publish') {

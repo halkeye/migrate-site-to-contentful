@@ -12,7 +12,7 @@
     "commander": "^3.0.0",
     "contentful-management": "^5.10.0",
     "frontmatter": "0.0.3",
-    "lodash": "^4.17.15",
+    "lodash": "^4.17.19",
     "mime-types": "^2.1.24"
   }
 }
